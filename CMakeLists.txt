@@ -44,9 +44,15 @@ set(GAME_SOURCES
     src/recomp_manual.c
     src/switch_nx.c
     src/text_patch.c
+    src/android_host.c
 )
 
-if(WIN32)
+if(ANDROID)
+    # Android hosts the recomp as a native shared library loaded by a tiny
+    # NativeActivity/SDL bootstrap.  Keep the game/runtime entirely native.
+    add_library(${PROJECT_NAME} SHARED ${GAME_SOURCES} ${RECOMP_GEN_SOURCES})
+    target_compile_definitions(${PROJECT_NAME} PRIVATE NFSU2_ANDROID=1)
+elseif(WIN32)
     add_executable(${PROJECT_NAME} WIN32 ${GAME_SOURCES} ${RECOMP_GEN_SOURCES})
 else()
     add_executable(${PROJECT_NAME} ${GAME_SOURCES} ${RECOMP_GEN_SOURCES})
@@ -100,6 +106,13 @@ else()
     set_source_files_properties(${RECOMP_GEN_SOURCES} PROPERTIES
         COMPILE_OPTIONS "${NFSU2_GEN_OPT};-w;-fno-strict-aliasing;-fwrapv")
     target_link_libraries(${PROJECT_NAME} PRIVATE m)
+    if(ANDROID)
+        find_library(ANDROID_LIB android REQUIRED)
+        find_library(LOG_LIB log REQUIRED)
+        find_library(VULKAN_LIB vulkan REQUIRED)
+        target_link_libraries(${PROJECT_NAME} PRIVATE
+            ${ANDROID_LIB} ${LOG_LIB} ${VULKAN_LIB})
+    endif()
 endif()
 
 # ── Nintendo Switch homebrew (devkitA64 + libnx) ────────────────
