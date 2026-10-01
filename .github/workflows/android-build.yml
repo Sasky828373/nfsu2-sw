@@ -11,38 +11,29 @@ jobs:
   build-android:
     runs-on: ubuntu-latest
 
-    env:
-      ANDROID_HOME: /usr/local/lib/android/sdk
-      ANDROID_SDK_ROOT: /usr/local/lib/android/sdk
-
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Setup Java
-        uses: actions/setup-java@v4
-        with:
-          distribution: temurin
-          java-version: '17'
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
 
-      - name: Install Android packages
+      - name: Install NDK
         run: |
-          yes | ${ANDROID_HOME}/cmdline-tools/latest/bin/sdkmanager --licenses || true
-          ${ANDROID_HOME}/cmdline-tools/latest/bin/sdkmanager \
-            "platform-tools" \
-            "platforms;android-35" \
-            "build-tools;35.0.0" \
-            "ndk;28.2.13676358" \
-            "cmake;3.30.5"
+          yes | sdkmanager --licenses || true
+          sdkmanager "platform-tools" "platforms;android-35" "build-tools;35.0.0" "ndk;28.2.13676358" "cmake;3.30.5"
 
-      - name: Build APK
+      - name: Configure native Android build
         run: |
-          cd android
-          chmod +x gradlew
-          ./gradlew assembleRelease
+          mkdir -p build-android
+          cd build-android
+          cmake .. -DANDROID_ABI=arm64-v8a -DANDROID_PLATFORM=android-35 -DNFSU2_VULKAN=ON
 
-      - name: Upload APK
+      - name: Build native library
+        run: |
+          cmake --build build-android --parallel 4
+
+      - name: Upload native build
         uses: actions/upload-artifact@v4
         with:
-          name: nfsu2-android-apk
-          path: android/app/build/outputs/apk/**/*.apk
+          name: nfsu2-android-native
+          path: build-android/**
