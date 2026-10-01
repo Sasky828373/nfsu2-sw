@@ -5,6 +5,7 @@ on:
   push:
     branches:
       - android-port
+      - main
 
 jobs:
   build-android:
@@ -23,8 +24,10 @@ jobs:
       - name: Setup Android SDK
         uses: android-actions/setup-android@v3
 
-      - name: Install NDK
-        run: sdkmanager 'ndk;28.2.13676358' 'cmake;3.30.5'
+      - name: Install Android packages
+        run: |
+          yes | sdkmanager --licenses
+          sdkmanager "platform-tools" "platforms;android-35" "build-tools;35.0.0" "ndk;28.2.13676358" "cmake;3.30.5"
 
       - name: Build APK
         run: |
