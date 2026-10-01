@@ -1,3 +1,8 @@
+#include "android_guest_runtime.h"
+#include <errno.h>
+#include "android_debug_log.h"
+#include <unistd.h>
+#include <pthread.h>
 /**
  * Need for Speed: Underground 2 (Xbox) - recompiled game entry point
  *
@@ -19,6 +24,10 @@
 #  include <signal.h>
 #  include <unistd.h>
 #endif
+#if defined(__ANDROID__)
+#include <android/log.h>
+#endif
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <stdbool.h>
@@ -69,8 +78,8 @@ extern void xbox_path_init(const char *game_dir, const char *save_dir);
 #  define NFSU2_DEFAULT_GAME_DIR "sdmc:/switch/nfsu2x/game"
 #  define NFSU2_DEFAULT_SAVE_DIR "sdmc:/switch/nfsu2x/save"
 #elif defined(__ANDROID__)
-#  define NFSU2_DEFAULT_GAME_DIR "/sdcard/Android/data/com.nfsu2.recomp/files/game"
-#  define NFSU2_DEFAULT_SAVE_DIR "/sdcard/Android/data/com.nfsu2.recomp/files/save"
+#  define NFSU2_DEFAULT_GAME_DIR "/storage/emulated/0/NFSU2/game"
+#  define NFSU2_DEFAULT_SAVE_DIR "/storage/emulated/0/NFSU2/save"
 #else
 #  define NFSU2_DEFAULT_GAME_DIR "game"
 #  define NFSU2_DEFAULT_SAVE_DIR NULL
@@ -243,7 +252,6 @@ void xbox_gil_mark_main(void);
 void nfsu2_text_patch_init(void);    /* text_patch.c: Switch button names */
 
 #ifdef __SWITCH__
-#include <pthread.h>
 /* The first guest thread runs inline on whichever host thread boots the
  * title, and Horizon's main thread stack is small for recompiled code; boot
  * on a thread with a stack sized like a desktop main thread instead. */
@@ -277,12 +285,72 @@ int main(int argc, char **argv)
     return rc;
 }
 #elif defined(__ANDROID__)
-/* Called by the Android Java/NativeActivity bootstrap.  Running the guest on
- * a dedicated thread is handled by android_host.c so it can have a large
- * stack without blocking Android's UI thread. */
+/*
+ * SDLActivity calls this entry point from SDL's native thread.
+ * The lifted Xbox code needs a substantially larger stack, so run the
+ * actual guest on our own 16 MiB pthread and wait for it here.
+ */
+static void *nfsu2_android_game_thread(void *arg)
+{
+    (void)arg;
+
+    nfsu2_debug_log("THREAD: entering game_main");
+
+    int rc = game_main();
+
+    nfsu2_debug_log(
+        "THREAD: game_main RETURNED rc=%d",
+        rc
+    );
+
+    return (void *)(intptr_t)rc;
+}
+
 int nfsu2_android_game_main(void)
 {
-    return game_main();
+    nfsu2_debug_log("ANDROID ENTRY: nfsu2_android_game_main entered");
+    nfsu2_install_signal_logger();
+
+    pthread_t thread;
+    pthread_attr_t attr;
+    void *result = NULL;
+
+    __android_log_print(
+        ANDROID_LOG_INFO,
+        "NFSU2Recomp",
+        "starting 16 MiB game thread"
+    );
+
+    if (pthread_attr_init(&attr) != 0)
+        return -1;
+
+    if (pthread_attr_setstacksize(&attr, 16u * 1024u * 1024u) != 0) {
+        pthread_attr_destroy(&attr);
+        return -1;
+    }
+
+    if (pthread_create(&thread, &attr,
+                       nfsu2_android_game_thread, NULL) != 0) {
+        pthread_attr_destroy(&attr);
+        return -1;
+    }
+
+    pthread_attr_destroy(&attr);
+
+    nfsu2_debug_log("ANDROID ENTRY: waiting for game thread");
+
+    int join_rc = pthread_join(thread, &result);
+
+    nfsu2_debug_log(
+        "ANDROID ENTRY: pthread_join=%d game_result=%ld",
+        join_rc,
+        (long)(intptr_t)result
+    );
+
+    if (join_rc != 0)
+        return -1;
+
+    return (int)(intptr_t)result;
 }
 #else
 int main(int argc, char **argv)
@@ -293,9 +361,52 @@ int main(int argc, char **argv)
 }
 #endif
 
+static void android_boot_marker(const char *msg)
+{
+#if defined(__ANDROID__)
+    __android_log_print(ANDROID_LOG_ERROR, "NFSU2Recomp", "BOOT: %s", msg);
+
+    FILE *f = fopen("/sdcard/nfsu2_boot.txt", "a");
+    if (f) {
+        fprintf(f, "%s\\n", msg);
+        fclose(f);
+    }
+#else
+    (void)msg;
+#endif
+}
+
 static int game_main(void)
 {
-    xbox_guest_pin(0);     /* the boot thread becomes the title's first thread */
+#if defined(__ANDROID__)
+    nfsu2_debug_log("GAME_MAIN: entered");
+    nfsu2_install_signal_logger();
+
+    nfsu2_debug_log(
+        "GAME_MAIN: game directory=/storage/emulated/0/NFSU2/game"
+    );
+
+    if (access("/storage/emulated/0/NFSU2/game", F_OK) == 0)
+        nfsu2_debug_log("GAME_MAIN: game directory EXISTS");
+    else
+        nfsu2_debug_log("GAME_MAIN: game directory MISSING errno=%d", errno);
+
+    if (access("/storage/emulated/0/NFSU2/game/default.xbe", R_OK) == 0)
+        nfsu2_debug_log("GAME_MAIN: default.xbe EXISTS and readable");
+    else
+        nfsu2_debug_log("GAME_MAIN: default.xbe NOT READABLE errno=%d", errno);
+#endif
+
+    android_boot_marker("01 entered game_main");
+
+    android_boot_marker("02 before xbox_guest_pin");
+#if !defined(__ANDROID__)
+    nfsu2_debug_log("BOOT: before xbox_guest_pin");
+    xbox_guest_pin(0);
+    nfsu2_debug_log("BOOT: after xbox_guest_pin");
+#endif
+    android_boot_marker("03 after xbox_guest_pin");
+
     char xbe_path[512];
     const char *game_dir;
     void *xbe_data;
@@ -305,9 +416,13 @@ static int game_main(void)
     setvbuf(stderr, NULL, _IONBF, 0);
 
     printf("=== Need for Speed: Underground 2 (Xbox) - static recompilation ===\n");
+    nfsu2_debug_log("BOOT: before install_crash_reporter");
     install_crash_reporter();
+    nfsu2_debug_log("BOOT: after install_crash_reporter");
+    nfsu2_debug_log("BOOT 10: checking NFSU2_EXIT_TRACE");
     if (getenv("NFSU2_EXIT_TRACE"))
         atexit(print_guest_state);
+    nfsu2_debug_log("BOOT 11: exit trace check complete");
 
     /* Runtime defaults this title needs; an explicit setting still wins.
      *   RECOMP_VBLANK      the linked D3D waits on its vblank ISR every frame
@@ -318,10 +433,19 @@ static int game_main(void)
     if (!getenv("RECOMP_AC97_READY")) _putenv("RECOMP_AC97_READY=plain");
     if (!getenv("RECOMP_USB"))        _putenv("RECOMP_USB=1");
 #else
-    setenv("RECOMP_VBLANK", "1", 0);
-    setenv("RECOMP_AC97_READY", "plain", 0);
-    setenv("RECOMP_USB", "1", 0);       /* the pad is on the MCPX's OHCI */
-    setenv("RECOMP_PB_EXEC", "1", 0);   /* the title draws through NV2A */
+    nfsu2_debug_log("BOOT 20: setting runtime environment");
+
+    int env_r1 = setenv("RECOMP_VBLANK", "1", 0);
+    nfsu2_debug_log("BOOT 21: RECOMP_VBLANK result=%d errno=%d", env_r1, errno);
+
+    int env_r2 = setenv("RECOMP_AC97_READY", "plain", 0);
+    nfsu2_debug_log("BOOT 22: RECOMP_AC97_READY result=%d errno=%d", env_r2, errno);
+
+    int env_r3 = setenv("RECOMP_USB", "1", 0);
+    nfsu2_debug_log("BOOT 23: RECOMP_USB result=%d errno=%d", env_r3, errno);
+
+    int env_r4 = setenv("RECOMP_PB_EXEC", "1", 0);
+    nfsu2_debug_log("BOOT 24: RECOMP_PB_EXEC result=%d errno=%d", env_r4, errno);
 #endif
 #if defined(__SWITCH__)
     /* Every periodic log line flushes to the SD card; keep the log to what
@@ -329,12 +453,31 @@ static int game_main(void)
     setenv("RECOMP_QUIET", "1", 0);
 #endif
 
+    nfsu2_debug_log("BOOT 30: resolving game directory");
+
     game_dir = getenv("NFSU2_GAME_DIR");
+
+    nfsu2_debug_log("BOOT 31: getenv returned %s",
+                    game_dir ? game_dir : "(null)");
+
     if (!game_dir || !game_dir[0])
         game_dir = NFSU2_DEFAULT_GAME_DIR;
-    snprintf(xbe_path, sizeof(xbe_path), "%s/default.xbe", game_dir);
+
+    nfsu2_debug_log("BOOT 32: final game_dir=%s", game_dir);
+
+    snprintf(xbe_path, sizeof(xbe_path),
+             "%s/default.xbe", game_dir);
+
+    nfsu2_debug_log("BOOT 33: xbe_path=%s", xbe_path);
+
+    nfsu2_debug_log("BOOT 34: before load_file");
 
     xbe_data = load_file(xbe_path, &xbe_size);
+
+    nfsu2_debug_log(
+        "BOOT 35: after load_file ptr=%p size=%zu",
+        xbe_data, xbe_size
+    );
     if (!xbe_data) {
         fprintf(stderr, "cannot read %s\n", xbe_path);
         fatal("Failed to load default.xbe. Put the extracted disc in the game "
@@ -343,15 +486,39 @@ static int game_main(void)
     }
     printf("XBE %s: %zu bytes\n", xbe_path, xbe_size);
 
-    if (!xbox_MemoryLayoutInit(xbe_data, xbe_size)) {
+    nfsu2_debug_log(
+        "BOOT 40: XBE loaded successfully size=%zu",
+        xbe_size
+    );
+
+    nfsu2_debug_log("BOOT 41: before xbox_MemoryLayoutInit");
+
+    int memory_ok =
+        xbox_MemoryLayoutInit(xbe_data, xbe_size);
+
+    nfsu2_debug_log(
+        "BOOT 42: xbox_MemoryLayoutInit returned %d",
+        memory_ok
+    );
+
+    if (!memory_ok) {
         fatal("Failed to initialise the Xbox memory layout "
               "(the guest address range may be unavailable).");
         free(xbe_data);
         return 1;
     }
+    nfsu2_debug_log("BOOT 43: memory layout successful");
+
     g_xbox_mem_offset = xbox_GetMemoryOffset();
+
+    nfsu2_debug_log(
+        "BOOT 44: memory offset=0x%llx",
+        (unsigned long long)g_xbox_mem_offset
+    );
     printf("Xbox memory mapped at host offset 0x%llX\n",
            (unsigned long long)g_xbox_mem_offset);
+
+    nfsu2_debug_log("BOOT 45: before simulation-time patch");
 
     /* Game time per frame is capped: sub_001890C0 takes the real elapsed
      * time but at most 3.0 (the .data float at 0x3A4C64, read nowhere else)
@@ -363,13 +530,25 @@ static int game_main(void)
         const char *e = getenv("NFSU2_SIM_STEPS");
         float steps = e ? (float)atof(e) : 6.0f;
         if (steps >= 1.0f && steps <= 30.0f) {
-            float *cap = (float *)((uint8_t *)xbox_GetMemoryBase() + 0x3A4C64);
-            if (*cap == 3.0f) {
+            uint8_t *mem_base = (uint8_t *)xbox_GetMemoryBase();
+            nfsu2_debug_log("BOOT 46: memory base=%p cap_addr=%p",
+                            mem_base,
+                            mem_base ? mem_base + 0x3A4C64 : NULL);
+
+            if (mem_base) {
+                float *cap = (float *)(mem_base + 0x3A4C64);
+                nfsu2_debug_log("BOOT 47: cap value=%f", (double)*cap);
+                if (*cap == 3.0f) {
                 *cap = steps;
-                printf("[BOOT] game time cap %.0f ms per frame\n", steps * 1000.0f / 60.0f);
+                    printf("[BOOT] game time cap %.0f ms per frame\n",
+                           steps * 1000.0f / 60.0f);
+                }
             }
         }
     }
+
+    nfsu2_debug_log("BOOT 48: simulation-time patch complete");
+    nfsu2_debug_log("BOOT 50: before APU");
 
     /* The emulated APU. DirectSound's accesses reach it through the MMIO
      * accessors the DSOUND section is lifted with (regen.sh passes
@@ -382,7 +561,9 @@ static int game_main(void)
         int plain = strcmp(getenv("RECOMP_AC97_READY"), "plain") == 0;
 
         if (!plain || !apu || strcmp(apu, "0") != 0) {
+            nfsu2_debug_log("BOOT 51: calling mcpx_apu_init_standalone");
             g_apu_state = mcpx_apu_init_standalone((uint8_t *)xbox_GetMemoryBase());
+            nfsu2_debug_log("BOOT 52: APU returned state=%p", g_apu_state);
             fprintf(stderr, "[BOOT] emulated APU %s\n",
                     g_apu_state ? "up" : "FAILED to initialise");
             if (g_apu_state && plain)
@@ -390,6 +571,9 @@ static int game_main(void)
                                   apu_mmio_rd, apu_mmio_wr, g_apu_state);
         }
     }
+
+    nfsu2_debug_log("BOOT 53: APU stage complete");
+    nfsu2_debug_log("BOOT 60: before OHCI");
 
     /* The USB host controllers the title's XPP library drives to find its
      * gamepad (RECOMP_USB). On hosts without fault handling their registers
@@ -399,6 +583,8 @@ static int game_main(void)
         xbox_OhciInit();
     }
 
+    nfsu2_debug_log("BOOT 61: OHCI returned");
+
 #ifndef _WIN32
     /* The GPU renderer (NFSU2_GL=0 falls back to the executor's CPU one). */
     {
@@ -406,7 +592,9 @@ static int game_main(void)
         if (!gl || strcmp(gl, "0") != 0) {
 #if defined(NFSU2_VULKAN)
             extern void nv2a_vk_install(void);
+            nfsu2_debug_log("BOOT 70: before nv2a_vk_install");
             nv2a_vk_install();
+            nfsu2_debug_log("BOOT 71: nv2a_vk_install returned");
 #else
             extern void nv2a_gl_install(void);
             nv2a_gl_install();
@@ -415,24 +603,81 @@ static int game_main(void)
     }
 #endif
 
+    nfsu2_debug_log("BOOT 80: before xbox_kernel_init");
     xbox_kernel_init();
+    nfsu2_debug_log("BOOT 81: xbox_kernel_init returned");
+
+    nfsu2_debug_log("BOOT 82: before nfsu2_text_patch_init");
     nfsu2_text_patch_init();
+    nfsu2_debug_log("BOOT 83: text patch returned");
+
+    nfsu2_debug_log("BOOT 84: before xbox_path_init");
     xbox_path_init(game_dir, NFSU2_DEFAULT_SAVE_DIR);
+    nfsu2_debug_log("BOOT 85: xbox_path_init returned");
+
+    nfsu2_debug_log("BOOT 86: before xbox_kernel_bridge_init");
     xbox_kernel_bridge_init();
+    nfsu2_debug_log("BOOT 87: xbox_kernel_bridge_init returned");
 
     g_esp = XBOX_STACK_TOP;
+    nfsu2_debug_log("BOOT 90: guest ESP=0x%08X", g_esp);
 
+    nfsu2_debug_log("BOOT 91: before recomp_dispatch_init");
     if (!recomp_dispatch_init())
         fprintf(stderr, "[BOOT] flat dispatch unavailable; "
                         "indirect calls will use the binary search\n");
 
+    nfsu2_debug_log("BOOT 92: recomp_dispatch_init returned");
+
+    nfsu2_debug_log("BOOT 93: before watchdog");
     xbox_WatchdogStart();
+    nfsu2_debug_log("BOOT 94: watchdog started");
 
     printf("Starting guest at 0x%08X (esp=0x%08X)\n", NFSU2_ENTRY_POINT, g_esp);
-    xbox_gil_mark_main();      /* the frame-rate thread (RECOMP_GIL_EAGER) */
-    xbox_gil_enter();          /* guest code from here on (kernel_bridge.c) */
+    nfsu2_debug_log("BOOT 95: before xbox_gil_mark_main");
+    xbox_gil_mark_main();
+    nfsu2_debug_log("BOOT 96: before xbox_gil_enter");
+    xbox_gil_enter();
+    nfsu2_debug_log("BOOT 97: GIL entered");
+
+#if defined(__ANDROID__)
+    nfsu2_debug_log("BOOT 98: initializing Android guest runtime");
+
+    Nfsu2GuestThread guest_thread;
+
+    if (!nfsu2_guest_runtime_init(
+            &guest_thread,
+            NFSU2_ENTRY_POINT,
+            g_esp,
+            xbox_GetMemoryBase())) {
+        nfsu2_debug_log("BOOT 98A: guest runtime init FAILED");
+        xbox_gil_leave();
+        xbox_kernel_shutdown();
+        xbox_MemoryLayoutShutdown();
+        free(xbe_data);
+        return 1;
+    }
+
+    nfsu2_debug_log("BOOT 98B: guest runtime initialized");
+    nfsu2_debug_log("BOOT 98C: entering guest dispatcher");
+
+    if (!nfsu2_guest_execute(
+            &guest_thread,
+            NFSU2_ENTRY_POINT)) {
+        nfsu2_debug_log("BOOT 98D: guest dispatcher FAILED");
+    } else {
+        nfsu2_debug_log("BOOT 99: guest dispatcher returned");
+    }
+
+    nfsu2_guest_runtime_shutdown(&guest_thread);
+#else
+    nfsu2_debug_log("BOOT 98: ENTERING XBE ENTRY POINT");
     xbe_entry_point();
+    nfsu2_debug_log("BOOT 99: XBE ENTRY POINT RETURNED");
+#endif
+
     xbox_gil_leave();
+    nfsu2_debug_log("BOOT 100: GIL left");
 
     printf("Guest returned. Cleaning up.\n");
     xbox_kernel_shutdown();

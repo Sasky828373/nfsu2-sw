@@ -10023,6 +10023,18 @@ static void kernel_watch_arm_once(void)
 /* Current dispatching slot */
 static RECOMP_TLS int g_kernel_dispatch_slot = -1;
 
+
+#if defined(__ANDROID__)
+static void nfsu2_kernel_trace(const char *msg)
+{
+    FILE *f = fopen("/storage/emulated/0/NFSU2/nfsu2-crash.log", "a");
+    if (f) {
+        fprintf(f, "%s\n", msg);
+        fclose(f);
+    }
+}
+#endif
+
 static void kernel_thunk_dispatch_body(void);
 
 /* Every kernel call is marked busy for its whole length (bridge locks, the CRT
@@ -10067,6 +10079,25 @@ static void kernel_thunk_dispatch(void)
 
 static void kernel_thunk_dispatch_body(void)
 {
+#if defined(__ANDROID__)
+    {
+        char _trace[128];
+        snprintf(_trace, sizeof(_trace),
+                 "KDISP-00: ENTER slot=%d ord=%lu bridge=%p args=%d esp=0x%08X",
+                 g_kernel_dispatch_slot,
+                 (unsigned long)((g_kernel_dispatch_slot >= 0 &&
+                                  g_kernel_dispatch_slot < XBOX_KERNEL_THUNK_TABLE_SIZE)
+                                 ? g_slot_ordinals[g_kernel_dispatch_slot] : 0),
+                 (void *)((g_kernel_dispatch_slot >= 0 &&
+                           g_kernel_dispatch_slot < XBOX_KERNEL_THUNK_TABLE_SIZE)
+                          ? g_slot_bridges[g_kernel_dispatch_slot] : NULL),
+                 (g_kernel_dispatch_slot >= 0 &&
+                  g_kernel_dispatch_slot < XBOX_KERNEL_THUNK_TABLE_SIZE)
+                 ? g_slot_arg_bytes[g_kernel_dispatch_slot] : -1,
+                 g_esp);
+        nfsu2_kernel_trace(_trace);
+    }
+#endif
     int slot = g_kernel_dispatch_slot;
     bridge_func_t bridge;
     ULONG ordinal;

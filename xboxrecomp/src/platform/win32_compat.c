@@ -1,3 +1,4 @@
+#include <sys/syscall.h>
 /*
  * win32_compat.c - POSIX implementation of generic Win32 host primitives.
  *
@@ -872,22 +873,39 @@ void xbox_guest_pin(int interrupt)
 {
     int core = xbox_guest_core();
     const char *e = getenv("RECOMP_GUEST_ONE_CORE");
+
     if (core < 0)
         return;
+
     if (interrupt && e && *e == '2')
-        return;                /* mode 2: guest threads only, interrupts float */
+        return;
+
 #if defined(__SWITCH__)
     svcSetThreadCoreMask(CUR_THREAD_HANDLE, core, 1u << core);
-    /* libnx threads start at 59, Horizon's time-sliced priority; an
-     * interrupt thread goes above it so it pre-empts guest threads. */
+
     if (interrupt)
         svcSetThreadPriority(CUR_THREAD_HANDLE, 0x2C);
+
+#elif defined(__ANDROID__)
+    /*
+     * Android/Bionic:
+     * Do not use cpu_set_t / pthread_setaffinity_np here.
+     * Let Android schedule the recompilation threads.
+     */
+    (void)core;
+    (void)e;
+    (void)interrupt;
+
 #else
     {
         cpu_set_t set;
         CPU_ZERO(&set);
         CPU_SET(core, &set);
-        pthread_setaffinity_np(pthread_self(), sizeof set, &set);
+        pthread_setaffinity_np(
+            pthread_self(),
+            sizeof(set),
+            &set
+        );
         (void)interrupt;
     }
 #endif
@@ -1161,7 +1179,9 @@ BOOL TerminateThread(HANDLE h, DWORD exitCode)
 {
     w32_object *o = obj_from(h);
     if (!o || o->kind != K_THREAD) return FALSE;
+#if !defined(__ANDROID__)
     pthread_cancel(o->thread);
+#endif
     pthread_mutex_lock(&o->lock);
     o->exit_code = exitCode;
     o->exited    = 1;
@@ -1992,6 +2012,10 @@ VOID SecureZeroMemory(PVOID ptr, SIZE_T cnt)
 {
 #if defined(__APPLE__)
     memset_s(ptr, cnt, 0, cnt);
+#elif defined(__ANDROID__)
+    volatile unsigned char *p = (volatile unsigned char *)ptr;
+    while (cnt--)
+        *p++ = 0;
 #else
     explicit_bzero(ptr, cnt);
 #endif
@@ -2406,9 +2430,30 @@ static int anon_map_fd(const char *name)
     char shm_name[32];
     LONG seq = InterlockedIncrement(&map_counter);
     const char *base = name ? name : "xbox_map";
-    snprintf(shm_name, sizeof(shm_name), "/%s_%ld", base, seq);
+    snprintf(shm_name, sizeof(shm_name), "/%s_%d", base, (int)seq);
     int fd = shm_open(shm_name, O_CREAT | O_RDWR | O_EXCL, 0600);
     if (fd >= 0) shm_unlink(shm_name);
+    return fd;
+#elif defined(__ANDROID__)
+    /*
+     * A normal Android application cannot create files in /data/local/tmp
+     * or inside Termux's private data directory.
+     *
+     * Use an anonymous in-memory file instead. It can be ftruncate()'d and
+     * MAP_SHARED mapped multiple times, which is exactly what the Xbox RAM
+     * mirror implementation requires.
+     */
+    const char *map_name = name ? name : "xbox_map";
+
+#if defined(SYS_memfd_create)
+    int fd = (int)syscall(SYS_memfd_create, map_name, 0);
+#elif defined(__NR_memfd_create)
+    int fd = (int)syscall(__NR_memfd_create, map_name, 0);
+#else
+    errno = ENOSYS;
+    int fd = -1;
+#endif
+
     return fd;
 #else
     return memfd_create(name ? name : "xbox_map", 0);

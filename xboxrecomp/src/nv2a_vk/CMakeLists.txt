@@ -29,9 +29,9 @@ if(NINTENDO_SWITCH)
 else()
     find_package(Vulkan REQUIRED)
     find_package(PkgConfig REQUIRED)
-    pkg_check_modules(SDL2 REQUIRED IMPORTED_TARGET sdl2)
+    find_package(SDL2 REQUIRED)
     # The distribution glslang is built with its optimizer (static SPIRV-Tools).
-    target_link_libraries(xbox_nv2a_vk PUBLIC Vulkan::Vulkan PkgConfig::SDL2
+    target_link_libraries(xbox_nv2a_vk PUBLIC Vulkan::Vulkan SDL2::SDL2
         SPIRV-Tools-opt SPIRV-Tools stdc++)
 endif()
 if(NOT MSVC)

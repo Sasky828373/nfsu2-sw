@@ -9,6 +9,12 @@ cmake_minimum_required(VERSION 3.20)
 
 project(nfsu2_recomp C)
 
+# Required when xboxrecomp static libraries are linked into the Android
+# libnfsu2_recomp.so shared library.
+if(ANDROID)
+    set(CMAKE_POSITION_INDEPENDENT_CODE ON)
+endif()
+
 set(CMAKE_C_STANDARD 11)
 set(CMAKE_C_STANDARD_REQUIRED ON)
 
@@ -45,6 +51,7 @@ set(GAME_SOURCES
     src/switch_nx.c
     src/text_patch.c
     src/android_host.c
+        src/android_guest_runtime.c
 )
 
 if(ANDROID)
@@ -108,10 +115,23 @@ else()
     target_link_libraries(${PROJECT_NAME} PRIVATE m)
     if(ANDROID)
         find_library(ANDROID_LIB android REQUIRED)
-        find_library(LOG_LIB log REQUIRED)
+        # Android system liblog. Termux does not provide a normal
+        # NDK link stub, so use our link-only stub when building here.
+        if(EXISTS "${CMAKE_SOURCE_DIR}/android-link-stubs/liblog.so")
+            set(LOG_LIB "${CMAKE_SOURCE_DIR}/android-link-stubs/liblog.so")
+        else()
+            find_library(LOG_LIB log)
+        endif()
         find_library(VULKAN_LIB vulkan REQUIRED)
+
         target_link_libraries(${PROJECT_NAME} PRIVATE
-            ${ANDROID_LIB} ${LOG_LIB} ${VULKAN_LIB})
+            ${ANDROID_LIB} ${VULKAN_LIB})
+
+        if(LOG_LIB)
+            target_link_libraries(${PROJECT_NAME} PRIVATE ${LOG_LIB})
+        else()
+            message(STATUS "liblog not found; continuing without it for Termux build")
+        endif()
     endif()
 endif()
 
