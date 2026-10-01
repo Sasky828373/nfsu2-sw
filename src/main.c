@@ -68,6 +68,9 @@ extern void xbox_path_init(const char *game_dir, const char *save_dir);
 #if defined(__SWITCH__)
 #  define NFSU2_DEFAULT_GAME_DIR "sdmc:/switch/nfsu2x/game"
 #  define NFSU2_DEFAULT_SAVE_DIR "sdmc:/switch/nfsu2x/save"
+#elif defined(__ANDROID__)
+#  define NFSU2_DEFAULT_GAME_DIR "/sdcard/Android/data/com.nfsu2.recomp/files/game"
+#  define NFSU2_DEFAULT_SAVE_DIR "/sdcard/Android/data/com.nfsu2.recomp/files/save"
 #else
 #  define NFSU2_DEFAULT_GAME_DIR "game"
 #  define NFSU2_DEFAULT_SAVE_DIR NULL
@@ -272,6 +275,14 @@ int main(int argc, char **argv)
         fprintf(stderr, "[FATAL] cannot start the game thread\n");
     switch_shutdown();
     return rc;
+}
+#elif defined(__ANDROID__)
+/* Called by the Android Java/NativeActivity bootstrap.  Running the guest on
+ * a dedicated thread is handled by android_host.c so it can have a large
+ * stack without blocking Android's UI thread. */
+int nfsu2_android_game_main(void)
+{
+    return game_main();
 }
 #else
 int main(int argc, char **argv)
