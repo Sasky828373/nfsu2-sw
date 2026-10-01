@@ -10204,7 +10204,25 @@ static void kernel_thunk_dispatch_body(void)
     }
 
     if (bridge) {
+#if defined(__ANDROID__)
+        {
+            char _trace[160];
+            snprintf(_trace, sizeof(_trace),
+                     "KDISP-01: CALL slot=%d ord=%lu caller=0x%08X esp=0x%08X",
+                     slot, (unsigned long)ordinal, g_xbox_kernel_caller, g_esp);
+            nfsu2_kernel_trace(_trace);
+        }
+#endif
         bridge();
+#if defined(__ANDROID__)
+        {
+            char _trace[160];
+            snprintf(_trace, sizeof(_trace),
+                     "KDISP-02: RETURN slot=%d ord=%lu eax=0x%08X esp=0x%08X",
+                     slot, (unsigned long)ordinal, g_eax, g_esp);
+            nfsu2_kernel_trace(_trace);
+        }
+#endif
     } else {
         /* No specific bridge - return 0. Warn once per ordinal rather than
          * gating on g_kernel_call_count: a missing bridge is rare and is
