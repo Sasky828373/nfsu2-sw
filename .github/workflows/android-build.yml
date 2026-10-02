@@ -1,8 +1,5 @@
 name: Android APK Build
 
-# Trigger rebuild after workflow fixes
-# Force CI run 2
-
 on:
   workflow_dispatch:
   push:
@@ -20,17 +17,21 @@ jobs:
       - name: Setup build tools
         run: |
           sudo apt-get update
-          sudo apt-get install -y cmake ninja-build python3 python3-pip
+          sudo apt-get install -y cmake ninja-build python3 python3-pip build-essential
 
       - name: Generate recomp code
         run: |
-          if [ ! -f src/recomp/gen/recomp_funcs.h ]; then
-            echo "Generated code missing"
-            find . -maxdepth 3 -type f | grep -i recomp | head -50
+          mkdir -p src/recomp/gen
+          if [ -f src/recomp/gen/recomp_funcs.h ]; then
+            echo "Generated code already present"
+          else
+            echo "Searching recomp generator"
+            find xboxrecomp -type f \( -name "*recomp*" -o -name "*.py" \) | head -100
+            echo "No generated recomp output available in repository"
             exit 1
           fi
 
-      - name: Configure Android build
+      - name: Configure build
         run: |
           mkdir -p build-android
           cd build-android
