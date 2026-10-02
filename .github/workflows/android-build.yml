@@ -27,19 +27,21 @@ jobs:
       - name: Generate recomp output
         run: |
           mkdir -p src/recomp/gen
-          if [ -n "$(find . -type f -iname '*.xbe' | head -1)" ]; then
+          if find . -type f -iname '*.xbe' | grep -q .; then
             XBE=$(find . -type f -iname '*.xbe' | head -1)
             echo "Generating from $XBE"
-            ./xboxrecomp/build/tools.recomp --gen-dir src/recomp/gen "$XBE" || true
+            ./xboxrecomp/build/tools.recomp --gen-dir src/recomp/gen "$XBE"
           else
-            echo "No XBE bundled, skipping generation"
+            echo "No XBE found in repository"
+            echo "Upload NFSU2 XBE as build input before generating recomp code"
+            exit 1
           fi
 
       - name: Configure build
         run: |
           mkdir -p build-android
           cd build-android
-          cmake .. -DNFSU2_VULKAN=ON
+          cmake .. -DNFSU2_VULKAN=ON -DNFSU2_GEN_DIR=../src/recomp/gen
 
       - name: Build
         run: |
