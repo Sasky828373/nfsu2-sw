@@ -23,19 +23,23 @@ jobs:
         run: |
           cmake -S xboxrecomp -B xboxrecomp/build -DCMAKE_BUILD_TYPE=Release
           cmake --build xboxrecomp/build --parallel 4
+          find xboxrecomp/build -type f -executable -name '*recomp*' -print
 
       - name: Generate recomp output
         run: |
           mkdir -p src/recomp/gen
-          if find . -type f -iname '*.xbe' | grep -q .; then
-            XBE=$(find . -type f -iname '*.xbe' | head -1)
-            echo "Generating from $XBE"
-            ./xboxrecomp/build/tools.recomp --gen-dir src/recomp/gen "$XBE"
-          else
+          XBE=$(find . -type f -iname '*.xbe' | head -1)
+          if [ -z "$XBE" ]; then
             echo "No XBE found in repository"
-            echo "Upload NFSU2 XBE as build input before generating recomp code"
             exit 1
           fi
+          TOOL=$(find xboxrecomp/build -type f -executable -name 'tools.recomp' -o -name 'recomp' | head -1)
+          if [ -z "$TOOL" ]; then
+            echo "recomp executable not found"
+            find xboxrecomp/build -type f | head -100
+            exit 1
+          fi
+          "$TOOL" --gen-dir src/recomp/gen "$XBE"
 
       - name: Configure build
         run: |
