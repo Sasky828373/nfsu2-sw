@@ -24,9 +24,16 @@ jobs:
           cmake -S xboxrecomp -B xboxrecomp/build -DCMAKE_BUILD_TYPE=Release
           cmake --build xboxrecomp/build --parallel 4
 
-      - name: Locate recomp input
+      - name: Generate recomp output
         run: |
-          find . -type f \( -iname "*.xbe" -o -iname "*.elf" -o -iname "*.bin" \) || true
+          mkdir -p src/recomp/gen
+          if [ -n "$(find . -type f -iname '*.xbe' | head -1)" ]; then
+            XBE=$(find . -type f -iname '*.xbe' | head -1)
+            echo "Generating from $XBE"
+            ./xboxrecomp/build/tools.recomp --gen-dir src/recomp/gen "$XBE" || true
+          else
+            echo "No XBE bundled, skipping generation"
+          fi
 
       - name: Configure build
         run: |
