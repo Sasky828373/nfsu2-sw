@@ -1,7 +1,7 @@
 name: Android APK Build
 
 # Trigger rebuild after workflow fixes
-# Force CI run
+# Force CI run 2
 
 on:
   workflow_dispatch:
