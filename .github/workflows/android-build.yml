@@ -22,20 +22,21 @@ jobs:
         run: |
           cmake -S xboxrecomp -B xboxrecomp/build -DCMAKE_BUILD_TYPE=Release
           cmake --build xboxrecomp/build --parallel 4
-          find xboxrecomp/build -type f -executable -print
 
       - name: Generate recomp output
         run: |
           mkdir -p src/recomp/gen
-          XBE=$(find . -type f -iname '*.xbe' | grep -v xboxrecomp/tools | head -1)
+          echo "Searching for NFSU2 XBE"
+          find . -type f -iname '*.xbe' | grep -v xboxrecomp || true
+          XBE=$(find . -type f -iname '*.xbe' | grep -v xboxrecomp | head -1)
           if [ -z "$XBE" ]; then
-            echo "No NFSU2 XBE found"
+            echo "Missing NFSU2 XBE input"
+            echo "Repository contains the recomp framework but not the game binary."
             exit 1
           fi
-          TOOL=$(find xboxrecomp/build -type f -executable | grep -v CMakeFiles | grep -E '/(recomp|xbox)' | head -1)
+          TOOL=$(find xboxrecomp/build -type f -executable ! -path '*CMakeFiles*' | grep -E 'recomp|xbox' | head -1)
           if [ -z "$TOOL" ]; then
             echo "No recomp executable found"
-            find xboxrecomp/build -type f -executable
             exit 1
           fi
           echo "Using $TOOL"
