@@ -23,7 +23,6 @@ jobs:
         run: |
           cmake -S xboxrecomp -B xboxrecomp/build -DCMAKE_BUILD_TYPE=Release
           cmake --build xboxrecomp/build --parallel 4
-          find xboxrecomp/build -type f -executable -name '*recomp*' -print
 
       - name: Generate recomp output
         run: |
@@ -33,10 +32,10 @@ jobs:
             echo "No XBE found in repository"
             exit 1
           fi
-          TOOL=$(find xboxrecomp/build -type f -executable -name 'tools.recomp' -o -name 'recomp' | head -1)
+          TOOL=$(find xboxrecomp/build -type f -executable | grep -E 'recomp|tool' | head -1)
           if [ -z "$TOOL" ]; then
-            echo "recomp executable not found"
-            find xboxrecomp/build -type f | head -100
+            echo "No recomp tool found"
+            find xboxrecomp/build -type f -executable
             exit 1
           fi
           "$TOOL" --gen-dir src/recomp/gen "$XBE"
